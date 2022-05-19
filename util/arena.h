@@ -17,19 +17,21 @@ class Arena {
  public:
   Arena();
 
+  // 无拷贝赋值
   Arena(const Arena&) = delete;
   Arena& operator=(const Arena&) = delete;
 
   ~Arena();
 
-  // Return a pointer to a newly allocated memory block of "bytes" bytes.
+  // 返回一个指向新分配的内存大小为bytes的块的指针。
   char* Allocate(size_t bytes);
 
-  // Allocate memory with the normal alignment guarantees provided by malloc.
+  // 分配的内存自然对齐。
   char* AllocateAligned(size_t bytes);
 
   // Returns an estimate of the total memory usage of data allocated
   // by the arena.
+  // 返回分配的数据的总内存使用量的估计值。
   size_t MemoryUsage() const {
     return memory_usage_.load(std::memory_order_relaxed);
   }
@@ -38,31 +40,33 @@ class Arena {
   char* AllocateFallback(size_t bytes);
   char* AllocateNewBlock(size_t block_bytes);
 
-  // Allocation state
-  char* alloc_ptr_;
+  // 分配状态：
+  char* alloc_ptr_;  // 指第一个待分配的指针
+  // 如果分配了一个大块，而没有用完，下次分配会先查看
+  // 大块中没有用完的部分，符合就直接从大块取，不用再分配新块了。
   size_t alloc_bytes_remaining_;
 
-  // Array of new[] allocated memory blocks
+  // 通过new[]分配的内存块数组。
   std::vector<char*> blocks_;
 
-  // Total memory usage of the arena.
+  // arena的所有内存使用状况。
   //
-  // TODO(costan): This member is accessed via atomics, but the others are
-  //               accessed without any locking. Is this OK?
+  // TODO(costan): 这个成员确保原子操作的，但其他
+  //               成员不是原子操作，同时也没有锁，是否合理？
   std::atomic<size_t> memory_usage_;
 };
 
 inline char* Arena::Allocate(size_t bytes) {
-  // The semantics of what to return are a bit messy if we allow
-  // 0-byte allocations, so we disallow them here (we don't need
-  // them for our internal use).
+  // 如果返回0-byte，那语义就很奇怪，所以就干脆在调用Allocate时保证非0。
   assert(bytes > 0);
+  // 如果当前分配的块还有剩余，并且剩余满足要分配的大小，就直接从当前的块分配内存。
   if (bytes <= alloc_bytes_remaining_) {
     char* result = alloc_ptr_;
     alloc_ptr_ += bytes;
     alloc_bytes_remaining_ -= bytes;
     return result;
   }
+  // 如果当前分配的块没有剩余或者剩余不满足要分配的大小，分配一个新块。
   return AllocateFallback(bytes);
 }
 

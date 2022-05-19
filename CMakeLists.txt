@@ -390,13 +390,14 @@ if(LEVELDB_BUILD_TESTS)
   leveldb_test("db/c_test.c")
 
   if(NOT BUILD_SHARED_LIBS)
+    leveldb_test("app/main.cc")
     # TODO(costan): This test also uses
     #               "util/env_{posix|windows}_test_helper.h"
-    if (WIN32)
-      leveldb_test("util/env_windows_test.cc")
-    else (WIN32)
-      leveldb_test("util/env_posix_test.cc")
-    endif (WIN32)
+    # if (WIN32)
+    #  leveldb_test("util/env_windows_test.cc")
+    # else (WIN32)
+    #  leveldb_test("util/env_posix_test.cc")
+    # endif (WIN32)
   endif(NOT BUILD_SHARED_LIBS)
 endif(LEVELDB_BUILD_TESTS)
 
