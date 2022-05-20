@@ -29,10 +29,9 @@ class Arena {
   // 分配的内存自然对齐。
   char* AllocateAligned(size_t bytes);
 
-  // Returns an estimate of the total memory usage of data allocated
-  // by the arena.
   // 返回分配的数据的总内存使用量的估计值。
   size_t MemoryUsage() const {
+    // 原子性的加载并返回当前值。值在内存的顺序不要紧。
     return memory_usage_.load(std::memory_order_relaxed);
   }
 
