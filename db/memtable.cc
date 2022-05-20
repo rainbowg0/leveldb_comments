@@ -18,11 +18,14 @@ static Slice GetLengthPrefixedSlice(const char* data) {
   return Slice(p, len);
 }
 
+/// 初始引用计数为0，caller会调用至少一次Ref()。
+/// 同时创建一个SkipList（table_）。
 MemTable::MemTable(const InternalKeyComparator& comparator)
     : comparator_(comparator), refs_(0), table_(comparator_, &arena_) {}
 
 MemTable::~MemTable() { assert(refs_ == 0); }
 
+/// 返回MemTable使用的大约的内存大小。读取时被修改没问题（因为是大约）。
 size_t MemTable::ApproximateMemoryUsage() { return arena_.MemoryUsage(); }
 
 int MemTable::KeyComparator::operator()(const char* aptr,
@@ -71,6 +74,9 @@ class MemTableIterator : public Iterator {
   std::string tmp_;  // For passing to EncodeKey
 };
 
+/// 返回一个memtable上的迭代器。
+/// caller需要确保在返回迭代器时，底层的memtable存在。
+/// 迭代器返回的key是被编码过的。
 Iterator* MemTable::NewIterator() { return new MemTableIterator(&table_); }
 
 void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
@@ -81,25 +87,42 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
   //  tag          : uint64((sequence << 8) | type)
   //  value_size   : varint32 of value.size()
   //  value bytes  : char[value.size()]
+
+  /// memtable的数据存储格式：
+  /// key_size    |   key_data  |  value_size  | value_data
+  /// (varint32)  |  (key_size) |  (varint32)  | (value_size)
+
+  /// 获取key和value的大小（用作通过索引找到key和value的位置）
   size_t key_size = key.size();
   size_t val_size = value.size();
+  /// internal_key = key + tag(8bit)
   size_t internal_key_size = key_size + 8;
+  /// encoded_len = varint32 * 2 + key_size + value_size + 8
   const size_t encoded_len = VarintLength(internal_key_size) +
                              internal_key_size + VarintLength(val_size) +
                              val_size;
+  /// 分配encoded_len大小的一块内存。
   char* buf = arena_.Allocate(encoded_len);
+  /// 将bit压缩成byte
   char* p = EncodeVarint32(buf, internal_key_size);
+  /// 直接将key放入分配的内存。
   std::memcpy(p, key.data(), key_size);
+  /// 后移，为下次放入作准备。
   p += key_size;
+  /// 制作64bit的tag，并压缩成byte，放入p。
   EncodeFixed64(p, (s << 8) | type);
   p += 8;
+  /// 将bit压缩成byte，放入p，之后放入value。
   p = EncodeVarint32(p, val_size);
   std::memcpy(p, value.data(), val_size);
   assert(p + val_size == buf + encoded_len);
+  /// 在skiplist插入buf块。保证唯一性。
   table_.Insert(buf);
 }
 
 bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
+  /// lookupkey = varint32 + key + tag
+  /// 通过调用memtable_key，保留varint32 + key + tag。
   Slice memkey = key.memtable_key();
   Table::Iterator iter(&table_);
   iter.Seek(memkey.data());
@@ -114,12 +137,16 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
     // sequence number since the Seek() call above should have skipped
     // all entries with overly large sequence numbers.
     const char* entry = iter.key();
+    /// 获取memkey的开始与结束位置。
     uint32_t key_length;
     const char* key_ptr = GetVarint32Ptr(entry, entry + 5, &key_length);
+    /// 如果memkey在table_中存在：
     if (comparator_.comparator.user_comparator()->Compare(
             Slice(key_ptr, key_length - 8), key.user_key()) == 0) {
       // Correct user key
       const uint64_t tag = DecodeFixed64(key_ptr + key_length - 8);
+      /// 通过tag取出获取key的类型，由于删除不会直接删除key
+      /// 通过tag可以查找到是否已经被删除。
       switch (static_cast<ValueType>(tag & 0xff)) {
         case kTypeValue: {
           Slice v = GetLengthPrefixedSlice(key_ptr + key_length);

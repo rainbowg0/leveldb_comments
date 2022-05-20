@@ -273,6 +273,7 @@ int SkipList<Key, Comparator>::RandomHeight() {
   // Increase height with probability 1 in kBranching
   static const unsigned int kBranching = 4;
   int height = 1;
+  /// 确保height小于等于kMaxHeight
   while (height < kMaxHeight && rnd_.OneIn(kBranching)) {
     height++;
   }
