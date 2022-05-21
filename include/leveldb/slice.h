@@ -12,6 +12,9 @@
 // non-const method, all threads accessing the same Slice must use
 // external synchronization.
 
+/// Slice包含了指向一些内部存储的指针以及size。Slice的使用者确保Slice相关的内部存储不会被释放。
+/// 多线程在无外部同步的情况下可以调用const method，但non-const method需要外部同步。
+
 #ifndef STORAGE_LEVELDB_INCLUDE_SLICE_H_
 #define STORAGE_LEVELDB_INCLUDE_SLICE_H_
 
@@ -67,11 +70,13 @@ class LEVELDB_EXPORT Slice {
   // Drop the first "n" bytes from this slice.
   void remove_prefix(size_t n) {
     assert(n <= size());
+    /// 将data_向后移动n位
     data_ += n;
     size_ -= n;
   }
 
   // Return a string that contains the copy of the referenced data.
+  /// 从data_开始返回size_个char
   std::string ToString() const { return std::string(data_, size_); }
 
   // Three-way comparison.  Returns value:
