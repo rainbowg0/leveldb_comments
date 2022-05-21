@@ -13,17 +13,34 @@
 namespace leveldb {
 namespace log {
 
+/// 一个block中可能有多个record，但并不是以block为最小单位进行I/O的，而是以record进行I/O.
+
+/// record组成：
+/// -------------------------------–––––––––––------------------------
+/// | checksum(uint32) | length(uint16) | type(uint8) | data(length) |
+/// -------------------------------–––––––––––------------------------
+/// 其中 (checksum+length+type) 共同组成了header，大小为kHeaderSize。
+
+/// 共5种record types：
+/// (1) kZeroType：为preallocated文件保存的。
+/// (2) kFullType：该record是完整的。
+/// (3) kFirstType：碎片的第一块。
+/// (4) kMiddleType：碎片的中间块。
+/// (5) kLastType：碎片的最后一块。
 static void InitTypeCrc(uint32_t* type_crc) {
   for (int i = 0; i <= kMaxRecordType; i++) {
     char t = static_cast<char>(i);
+    /// 初始化时，所有record都是full的。
     type_crc[i] = crc32c::Value(&t, 1);
   }
 }
 
+/// 从block的0开始写入。
 Writer::Writer(WritableFile* dest) : dest_(dest), block_offset_(0) {
   InitTypeCrc(type_crc_);
 }
 
+/// 从block的dest_length % kBlockSize开始写入。
 Writer::Writer(WritableFile* dest, uint64_t dest_length)
     : dest_(dest), block_offset_(dest_length % kBlockSize) {
   InitTypeCrc(type_crc_);
@@ -38,12 +55,15 @@ Status Writer::AddRecord(const Slice& slice) {
   // Fragment the record if necessary and emit it.  Note that if slice
   // is empty, we still want to iterate once to emit a single
   // zero-length record
+  /// 如果record塞不下当前block，就将其分片。
   Status s;
   bool begin = true;
   do {
+    /// block还剩多大
     const int leftover = kBlockSize - block_offset_;
     assert(leftover >= 0);
     if (leftover < kHeaderSize) {
+      /// 如果剩余size比header还小，那就重新分配一个块。
       // Switch to a new block
       if (leftover > 0) {
         // Fill the trailer (literal below relies on kHeaderSize being 7)
@@ -56,7 +76,9 @@ Status Writer::AddRecord(const Slice& slice) {
     // Invariant: we never leave < kHeaderSize bytes in a block.
     assert(kBlockSize - block_offset_ - kHeaderSize >= 0);
 
+    /// avail：分配给header后，当前block还剩的size。
     const size_t avail = kBlockSize - block_offset_ - kHeaderSize;
+    /// 如果还剩的size比left还大，那就划出left大小的块，否则将block剩余全部分配。
     const size_t fragment_length = (left < avail) ? left : avail;
 
     RecordType type;
@@ -86,8 +108,10 @@ Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr,
 
   // Format the header
   char buf[kHeaderSize];
+  /// 4 5代表length
   buf[4] = static_cast<char>(length & 0xff);
   buf[5] = static_cast<char>(length >> 8);
+  /// 6代表type
   buf[6] = static_cast<char>(t);
 
   // Compute the crc of the record type and the payload.

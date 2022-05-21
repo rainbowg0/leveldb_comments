@@ -15,6 +15,10 @@ namespace log {
 
 Reader::Reporter::~Reporter() = default;
 
+/// 创建一个reader，从file读取record（reader使用过程中，file remain live）
+/// 如果reporter非空，在发生错误时报告情况。
+/// 如果checksum为true，检验读取是否正确。
+/// 从initial_offset开始读。
 Reader::Reader(SequentialFile* file, Reporter* reporter, bool checksum,
                uint64_t initial_offset)
     : file_(file),
@@ -31,10 +35,14 @@ Reader::Reader(SequentialFile* file, Reporter* reporter, bool checksum,
 Reader::~Reader() { delete[] backing_store_; }
 
 bool Reader::SkipToInitialBlock() {
+  /// offset_in_block：从要读的block的下标开始读。
+  /// block_start_location：要读的block的开始下标。
   const size_t offset_in_block = initial_offset_ % kBlockSize;
   uint64_t block_start_location = initial_offset_ - offset_in_block;
 
   // Don't search a block if we'd be in the trailer
+  /// 如果从当前的block开始读，发现剩余size小于header，说明当前block不可能存储有record信息。
+  /// 那就进入下一个块开始读。
   if (offset_in_block > kBlockSize - 6) {
     block_start_location += kBlockSize;
   }
@@ -43,6 +51,7 @@ bool Reader::SkipToInitialBlock() {
 
   // Skip to start of first block that can contain the initial record
   if (block_start_location > 0) {
+    /// 跳到对应的block开始读。
     Status skip_status = file_->Skip(block_start_location);
     if (!skip_status.ok()) {
       ReportDrop(block_start_location, skip_status);
