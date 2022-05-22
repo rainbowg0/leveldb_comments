@@ -108,7 +108,12 @@ const char* GetVarint32PtrFallback(const char* p, const char* limit,
 inline const char* GetVarint32Ptr(const char* p, const char* limit,
                                   uint32_t* value) {
   if (p < limit) {
+    /// char->uint8_t，并取出uint8_t数组，作为值放入uint32_t中。
+    /// 这边4个uint8_t 组合成了一个 uint32_t。
+    /// 并且以小端对齐，也就是最后一个uint8_t放在地址第一位。
     uint32_t result = *(reinterpret_cast<const uint8_t*>(p));
+    /// 由于小端对齐，第一个uint8_t放在地址最后一个byte，那就拿最后一个byte和
+    /// 128(0x10000000)比，如果非负数，直接返回。
     if ((result & 128) == 0) {
       *value = result;
       return p + 1;

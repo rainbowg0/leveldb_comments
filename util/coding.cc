@@ -20,6 +20,7 @@ void PutFixed64(std::string* dst, uint64_t value) {
 
 char* EncodeVarint32(char* dst, uint32_t v) {
   // Operate on characters as unsigneds
+  /// 将其转变为unsigned
   uint8_t* ptr = reinterpret_cast<uint8_t*>(dst);
   static const int B = 128;
   if (v < (1 << 7)) {

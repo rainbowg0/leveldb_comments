@@ -11,6 +11,7 @@
 
 namespace leveldb {
 
+/// data的前4byte保存的是data的长度。
 static Slice GetLengthPrefixedSlice(const char* data) {
   uint32_t len;
   const char* p = data;
@@ -41,8 +42,11 @@ int MemTable::KeyComparator::operator()(const char* aptr,
 // into this scratch space.
 static const char* EncodeKey(std::string* scratch, const Slice& target) {
   scratch->clear();
+  /// 将size转变为char放入string的开始位置
   PutVarint32(scratch, target.size());
+  /// string的剩余位置放char数组
   scratch->append(target.data(), target.size());
+  /// string->data() 返回的是字符串中指向char数组的指针。
   return scratch->data();
 }
 
@@ -89,21 +93,23 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
   //  value bytes  : char[value.size()]
 
   /// memtable的数据存储格式：
-  /// key_size    |   key_data  |  value_size  | value_data
-  /// (varint32)  |  (key_size) |  (varint32)  | (value_size)
+  /// key_size    |   key_data  |   tag   | value_size  | value_data
+  /// (varint32)  |  (key_size) |(uint64) | (varint32)  | (value_size)
 
   /// 获取key和value的大小（用作通过索引找到key和value的位置）
   size_t key_size = key.size();
   size_t val_size = value.size();
-  /// internal_key = key + tag(8bit)
+  /// internal_key = key + tag(8bytes)
   size_t internal_key_size = key_size + 8;
-  /// encoded_len = varint32 * 2 + key_size + value_size + 8
+  /// encoded_len: 要分配的内存大小（byte为单位）=
+  /// 保存internal_key_size所需byte + 保存val_size所需byte +
+  /// key_data + tag所需byte + value_data所需byte
   const size_t encoded_len = VarintLength(internal_key_size) +
                              internal_key_size + VarintLength(val_size) +
                              val_size;
   /// 分配encoded_len大小的一块内存。
   char* buf = arena_.Allocate(encoded_len);
-  /// 将bit压缩成byte
+  /// 将internal_key_size保存在p的前几位中
   char* p = EncodeVarint32(buf, internal_key_size);
   /// 直接将key放入分配的内存。
   std::memcpy(p, key.data(), key_size);
@@ -125,6 +131,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
   /// 通过调用memtable_key，保留varint32 + key + tag。
   Slice memkey = key.memtable_key();
   Table::Iterator iter(&table_);
+  /// Seek == FindGreaterOrEqual（memkey.data())
+  /// 由于tag具有唯一性，找到的kv一定是唯一的。
   iter.Seek(memkey.data());
   if (iter.Valid()) {
     // entry format is:

@@ -43,6 +43,12 @@
 
 namespace leveldb {
 
+/// 基于以下两个特点，skiplist中操作不需要锁或者node的引用计数：
+/// (1) skiplist中node内保存的是InternalKey与相应的value组成的数据，SequenceNumber
+///     的全局唯一性保证了不会有相同的node出现，也就保证了不会有node被更新。
+/// (2) delete操作等同于put，所以不需要引用计数记录node的存活周期。
+/// (3) node只会在skiplist销毁时才会销毁。
+
 template <typename Key, class Comparator>
 class SkipList {
  private:
@@ -291,6 +297,11 @@ bool SkipList<Key, Comparator>::KeyIsAfterNode(const Key& key, Node* n) const {
 
 /// 返回第一个大于等于key的节点（如果没找到，返回nullptr）
 /// 当prev非空时，在prev中保存所有[0..max_height_-1]层的指向返回节点的节点。
+/// 流程：
+/// (1) 从当前最高level开始，一直next，直到找到n->key >= key。
+/// (2) 找到后，将当前level的节点加入到prev中。然后判定：
+///     a. 如果当前level已经为0，直接返回next节点。
+///     b. 否则下降一层，继续while循环。
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
 SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key,
@@ -320,7 +331,12 @@ SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key,
   }
 }
 
-/// 返回第一个小于等于key的节点（如果没找到返回nullptr）
+/// 返回小于等于key的最大节点（如果没找到返回nullptr）
+/// 流程：
+/// (1) 从当前最高level开始，一直next，直到找到n->key >= key。
+/// (2) 找到后，判定：
+///     a. 如果当前level已经为0，直接返回next节点。
+///     b. 否则下降一层，继续while循环。
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
 SkipList<Key, Comparator>::FindLessThan(const Key& key) const {
@@ -349,8 +365,11 @@ SkipList<Key, Comparator>::FindLessThan(const Key& key) const {
   }
 }
 
-/// 返回list中的最后一个节点。
-/// 如果list为空，返回head。
+/// 返回list中的最后一个节点。如果list为空，返回head。
+/// (1) 从当前最高level开始，一直next。
+/// (2) 发现next为nullptr：
+///     a. 如果此时已经到level0了，说明找到了尾节点，直接返回。
+///     b. 否则进入下一层找。
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::FindLast()
     const {
@@ -389,6 +408,16 @@ SkipList<Key, Comparator>::SkipList(Comparator cmp, Arena* arena)
   }
 }
 
+/// 插入流程：
+/// (1) 先找到大于等于key的第一个节点。并将所有指向该节点的指针保存下来。
+/// (2) 随机产生一个高度作为新节点的level，如果新生成的level大于当前的max_height_，
+///     超出的部分体现在prev中之前保存的node，将这些超出部分填入head。并更新max_height_。
+///     更新时，可以memory_order_relaxed，why？
+///     并发reader读取max_height_只会有两种可能：
+///     a. max_height_更新了，但head_中next指针还没更新：
+///        next指向nullptr，自然结束。
+///     b. head_中next已经更新，那就使用那个新插入的节点。
+/// (3) 构造一个新节点，更新prev和next。
 template <typename Key, class Comparator>
 void SkipList<Key, Comparator>::Insert(const Key& key) {
   // TODO(opt): We can use a barrier-free variant of FindGreaterOrEqual()
