@@ -14,23 +14,35 @@ namespace leveldb {
 namespace log {
 
 /// 一个block中可能有多个record，但并不是以block为最小单位进行I/O的，而是以record进行I/O.
+/// block的组成：
+/// |---------|
+/// | record0 |
+/// | record1 |
+/// | ....... |
+/// | recordn |
+/// | trailer |
+/// | --------|
+/// trailer：如果block最后部分小于record的kHeaderSize，剩余部分为trailer，填0不用。
 
 /// record组成：
 /// -------------------------------–––––––––––------------------------
 /// | checksum(uint32) | length(uint16) | type(uint8) | data(length) |
 /// -------------------------------–––––––––––------------------------
-/// 其中 (checksum+length+type) 共同组成了header，大小为kHeaderSize。
-
-/// 共5种record types：
+/// + checksum： 记录的是type和data的crc校验
+/// + length：是record内部保存的data长度（小端）
+/// + 共5种record types：
 /// (1) kZeroType：为preallocated文件保存的。
 /// (2) kFullType：该record是完整的。
 /// (3) kFirstType：碎片的第一块。
 /// (4) kMiddleType：碎片的中间块。
 /// (5) kLastType：碎片的最后一块。
+/// 其中 (checksum+length+type) 共同组成了header，大小为kHeaderSize。
+
 static void InitTypeCrc(uint32_t* type_crc) {
   for (int i = 0; i <= kMaxRecordType; i++) {
     char t = static_cast<char>(i);
-    /// 初始化时，所有record都是full的。
+    /// crc32c返回的是crc形式的数据n。
+    /// 初始化所有的5中record type。
     type_crc[i] = crc32c::Value(&t, 1);
   }
 }
@@ -82,6 +94,7 @@ Status Writer::AddRecord(const Slice& slice) {
     const size_t fragment_length = (left < avail) ? left : avail;
 
     RecordType type;
+    /// 如果left < avail，那么要么full，要么last。
     const bool end = (left == fragment_length);
     if (begin && end) {
       type = kFullType;
@@ -117,6 +130,7 @@ Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr,
   // Compute the crc of the record type and the payload.
   uint32_t crc = crc32c::Extend(type_crc_[t], ptr, length);
   crc = crc32c::Mask(crc);  // Adjust for storage
+  /// 0 1 2 3 代表checksum
   EncodeFixed32(buf, crc);
 
   // Write the header and the payload

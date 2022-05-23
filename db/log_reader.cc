@@ -34,9 +34,14 @@ Reader::Reader(SequentialFile* file, Reporter* reporter, bool checksum,
 
 Reader::~Reader() { delete[] backing_store_; }
 
+/// 流程：
+/// (1) 通过 initial_offset % kBlockSize 找到块中偏移量，initial_offset减去
+///     偏移量获得当前块的起始位置。
+/// (2) 如果偏移量在后6字节处，起始位置往下移一个block，读取下一个block。
+/// (3) Skip block_start_location 字节，跳跃到指定位置读。
 bool Reader::SkipToInitialBlock() {
   /// offset_in_block：从要读的block的下标开始读。
-  /// block_start_location：要读的block的开始下标。
+  /// block_start_location：要读的block的起始下标。
   const size_t offset_in_block = initial_offset_ % kBlockSize;
   uint64_t block_start_location = initial_offset_ - offset_in_block;
 
@@ -54,6 +59,7 @@ bool Reader::SkipToInitialBlock() {
     /// 跳到对应的block开始读。
     Status skip_status = file_->Skip(block_start_location);
     if (!skip_status.ok()) {
+      /// 如果碰到eof，报道错误
       ReportDrop(block_start_location, skip_status);
       return false;
     }
@@ -63,6 +69,7 @@ bool Reader::SkipToInitialBlock() {
 }
 
 bool Reader::ReadRecord(Slice* record, std::string* scratch) {
+  /// 通过initial_offset_跳跃到指定位置。
   if (last_record_offset_ < initial_offset_) {
     if (!SkipToInitialBlock()) {
       return false;
@@ -78,6 +85,7 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch) {
 
   Slice fragment;
   while (true) {
+    /// 获取要读取的block。
     const unsigned int record_type = ReadPhysicalRecord(&fragment);
 
     // ReadPhysicalRecord may have only had an empty trailer remaining in its
@@ -86,6 +94,8 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch) {
     uint64_t physical_record_offset =
         end_of_buffer_offset_ - buffer_.size() - kHeaderSize - fragment.size();
 
+    /// 如果是在重启中
+    /// 跳过所有middle tye，直到遇到下一个record。
     if (resyncing_) {
       if (record_type == kMiddleType) {
         continue;
@@ -217,18 +227,25 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result) {
         // end of the file, which can be caused by the writer crashing in the
         // middle of writing the header. Instead of considering this an error,
         // just report EOF.
+        /// buffer_非空，但却是eof，说明有可能是write写到一半crash了。
         buffer_.clear();
         return kEof;
       }
     }
 
     // Parse the header
+    /// header[0..3]: checksum
+    /// header[4..5]: length
+    /// header[6]: type
     const char* header = buffer_.data();
     const uint32_t a = static_cast<uint32_t>(header[4]) & 0xff;
     const uint32_t b = static_cast<uint32_t>(header[5]) & 0xff;
     const unsigned int type = header[6];
     const uint32_t length = a | (b << 8);
     if (kHeaderSize + length > buffer_.size()) {
+      /// kHeaderSize + length 应该和buffer_.size()一样大，出现不一样大的原因有2：
+      /// 1. record内容有错误。
+      /// 2. writer写入时crash了。
       size_t drop_size = buffer_.size();
       buffer_.clear();
       if (!eof_) {
@@ -258,6 +275,7 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result) {
         // been corrupted and if we trust it, we could find some
         // fragment of a real log record that just happens to look
         // like a valid log record.
+        /// 如果没过checksum，将buffer清空并报告错误块大小。
         size_t drop_size = buffer_.size();
         buffer_.clear();
         ReportCorruption(drop_size, "checksum mismatch");
@@ -265,6 +283,7 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result) {
       }
     }
 
+    /// 移动到实际data处
     buffer_.remove_prefix(kHeaderSize + length);
 
     // Skip physical record that started before initial_offset_
