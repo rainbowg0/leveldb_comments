@@ -7,6 +7,12 @@
 #include "leveldb/slice.h"
 #include "util/hash.h"
 
+/// 为何使用bloom filter？
+/// leveldb采用分层存储结构，查询时最差的结果是在所有层（level）上都查询一次。
+/// bloom filter是一种空间效率很高的随机数据结构，可以使用较少空间存储大量数据全集。
+/// 通过bitmap简洁地表示一个集合并且判定一个元素是否属于这个集合。
+/// 缺点：再次判断一个元素是否属于一个集合时，会错把其他元素误以为是该集合元素。
+
 namespace leveldb {
 
 namespace {
@@ -18,6 +24,8 @@ class BloomFilterPolicy : public FilterPolicy {
  public:
   explicit BloomFilterPolicy(int bits_per_key) : bits_per_key_(bits_per_key) {
     // We intentionally round down to reduce probing cost a little bit
+    /// 为了获得最优准确率，当k = ln2 * (m/n)时，bloom 过滤器获得最优准确性。（k为hash函数个数）
+    /// 在hash函数个数取最优时，要让错误率不超过e，则m至少取最小值的1.44倍。
     k_ = static_cast<size_t>(bits_per_key * 0.69);  // 0.69 =~ ln(2)
     if (k_ < 1) k_ = 1;
     if (k_ > 30) k_ = 30;
@@ -27,6 +35,7 @@ class BloomFilterPolicy : public FilterPolicy {
 
   void CreateFilter(const Slice* keys, int n, std::string* dst) const override {
     // Compute bloom filter size (in both bits and bytes)
+    /// 总共多少bit。
     size_t bits = n * bits_per_key_;
 
     // For small n, we can see a very high false positive rate.  Fix it
@@ -36,6 +45,7 @@ class BloomFilterPolicy : public FilterPolicy {
     size_t bytes = (bits + 7) / 8;
     bits = bytes * 8;
 
+    /// 只能将结果append到dst末尾。
     const size_t init_size = dst->size();
     dst->resize(init_size + bytes, 0);
     dst->push_back(static_cast<char>(k_));  // Remember # of probes in filter
