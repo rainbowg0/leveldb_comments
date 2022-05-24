@@ -35,6 +35,13 @@
 #include "leveldb/options.h"
 #include "util/coding.h"
 
+/// BlockBuilder完成的是data block的build工作。
+/// builder的主要步骤：
+/// (1) 生成一个builder对象。
+/// (2) 向对象中添加kv，filter等。
+/// (3) Finish()构建完成。
+/// (4) 构建完成后的block放在内存中，按照SST文件指定格式。
+
 namespace leveldb {
 
 BlockBuilder::BlockBuilder(const Options* options)
@@ -53,6 +60,7 @@ void BlockBuilder::Reset() {
 }
 
 size_t BlockBuilder::CurrentSizeEstimate() const {
+  /// buffer_的size为所有entry所占内存大小。
   return (buffer_.size() +                       // Raw data buffer
           restarts_.size() * sizeof(uint32_t) +  // Restart array
           sizeof(uint32_t));                     // Restart array length
@@ -60,9 +68,11 @@ size_t BlockBuilder::CurrentSizeEstimate() const {
 
 Slice BlockBuilder::Finish() {
   // Append restart array
+  /// entry块的末尾添加每一个restart分区的start point（也就是offset）。
   for (size_t i = 0; i < restarts_.size(); i++) {
     PutFixed32(&buffer_, restarts_[i]);
   }
+  /// 最后添加一个数字表示有多少个restart分区。
   PutFixed32(&buffer_, restarts_.size());
   finished_ = true;
   return Slice(buffer_);
@@ -71,33 +81,43 @@ Slice BlockBuilder::Finish() {
 void BlockBuilder::Add(const Slice& key, const Slice& value) {
   Slice last_key_piece(last_key_);
   assert(!finished_);
+  /// restart分区大小设置为block_restart_interval。
   assert(counter_ <= options_->block_restart_interval);
+  /// key一定是有序的，因为在memtable中通过skiplist保证了有序性。
   assert(buffer_.empty()  // No values yet?
          || options_->comparator->Compare(key, last_key_piece) > 0);
   size_t shared = 0;
   if (counter_ < options_->block_restart_interval) {
     // See how much sharing to do with previous string
+    /// 当前restart分区还没满，可以继续插入entry。
+    /// 获取上一个entry的key与当前要插入的entry的key的较小值。
     const size_t min_length = std::min(last_key_piece.size(), key.size());
+    /// 找到前缀长度。
     while ((shared < min_length) && (last_key_piece[shared] == key[shared])) {
       shared++;
     }
   } else {
+    /// 如果当前restart分区已经满了，那就再次分配一个新的restart分区。
     // Restart compression
     restarts_.push_back(buffer_.size());
     counter_ = 0;
   }
+  /// 取得和前一个key非共享的长度。
   const size_t non_shared = key.size() - shared;
 
   // Add "<shared><non_shared><value_size>" to buffer_
+  /// 放入entry的前三个属性。
   PutVarint32(&buffer_, shared);
   PutVarint32(&buffer_, non_shared);
   PutVarint32(&buffer_, value.size());
 
   // Add string delta to buffer_ followed by value
+  /// 放入key的非共享部分和value。
   buffer_.append(key.data() + shared, non_shared);
   buffer_.append(value.data(), value.size());
 
   // Update state
+  /// 制作新的last_key_
   last_key_.resize(shared);
   last_key_.append(key.data() + shared, non_shared);
   assert(Slice(last_key_) == key);
