@@ -33,9 +33,12 @@ class Block {
 
   uint32_t NumRestarts() const;
 
+  /// 起始entry的地址。
   const char* data_;
+  /// 整个block的大小。
   size_t size_;
   uint32_t restart_offset_;  // Offset in data_ of restart array
+  /// 是否拥有这个数据，自己负责数据的申请和释放。
   bool owned_;               // Block owns data_[]
 };
 

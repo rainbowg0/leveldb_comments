@@ -15,10 +15,45 @@
 #include "util/coding.h"
 #include "util/logging.h"
 
+/// block中的内容：
+/// +------------------+ <---------------- data_
+/// |      entry1      | <-+
+/// +------------------+   ｜
+/// |      entry2      |   ｜
+/// +------------------+   ｜
+/// |       ...        | <-｜-+
+/// +------------------+   ｜ ｜
+/// |      entryN      |   ｜ ｜
+/// +------------------+ <-｜-｜---------- restarts_
+/// |    restart[0]    | --+  ｜
+/// +------------------+      ｜
+/// |    restart[1]    | -----+
+/// +------------------+
+/// |   num_restart    | <--------------- num_restarts_
+/// +------------------+ <--------------- size_
+
+/// 每个entry的内容：
+/// +-----------------------------------------------------------------------+
+/// |  shared  | non_shared | value_length | key非共享内容   |   value内容    |
+/// +-----------------------------------------------------------------------+
+/// | (varint) |  (varint)  |   (varint)   | (non_shared)  | (value_length) |
+/// +-----------------------------------------------------------------------+
+
+/// 说明：
+/// (1) entry：一份kv作为block的一个entry，通过前缀压缩对key进行存储，entry会记录
+///            自己与前一个key前缀相同的字节以及自己独有的字节，读取时对block遍历，
+///            每个entry根据前一个record构建自己的key。
+/// (2) restart：如果每次都要从头进行扫描，那就太耗时间了，所以通过将具有相同前缀的record
+///              进行分区，若干个(Option::block_restart_interval)key进行前缀压缩后，
+///              进入下一轮，通过restart对每个分区进行索引。
+
 namespace leveldb {
 
 inline uint32_t Block::NumRestarts() const {
   assert(size_ >= sizeof(uint32_t));
+  /// data_+size_找到block的最后，
+  /// 然后通过-4获取最后一个4byte长度的数据类型也就是获取block的末尾的restarts。
+  /// size_是到trailer为止，不包括trailer。
   return DecodeFixed32(data_ + size_ - sizeof(uint32_t));
 }
 
@@ -29,11 +64,15 @@ Block::Block(const BlockContents& contents)
   if (size_ < sizeof(uint32_t)) {
     size_ = 0;  // Error marker
   } else {
+    /// 最多restart分区的个数 = (block大小 - num_restart) / 每个restart所占4byte
+    /// 也就是除了num_restart，block中最多可以分配的restart分区的个数。
     size_t max_restarts_allowed = (size_ - sizeof(uint32_t)) / sizeof(uint32_t);
+    /// 当前restart分区个数不能比max_restarts_allowed还多。
     if (NumRestarts() > max_restarts_allowed) {
       // The size is too small for NumRestarts()
       size_ = 0;
     } else {
+      /// 返回的是block中第一个restart分区偏移量，
       restart_offset_ = size_ - (1 + NumRestarts()) * sizeof(uint32_t);
     }
   }
@@ -55,36 +94,55 @@ Block::~Block() {
 static inline const char* DecodeEntry(const char* p, const char* limit,
                                       uint32_t* shared, uint32_t* non_shared,
                                       uint32_t* value_length) {
+  /// 至少3byte。
   if (limit - p < 3) return nullptr;
+  /// p指向当前要编码的entry。
   *shared = reinterpret_cast<const uint8_t*>(p)[0];
   *non_shared = reinterpret_cast<const uint8_t*>(p)[1];
   *value_length = reinterpret_cast<const uint8_t*>(p)[2];
   if ((*shared | *non_shared | *value_length) < 128) {
     // Fast path: all three values are encoded in one byte each
+    /// 3个size都能在1byte内满足，那就只用分配3byte。
     p += 3;
   } else {
+    /// 通过p和limit，为3个size分配变量长度的值，长度最多为5byte。
     if ((p = GetVarint32Ptr(p, limit, shared)) == nullptr) return nullptr;
     if ((p = GetVarint32Ptr(p, limit, non_shared)) == nullptr) return nullptr;
     if ((p = GetVarint32Ptr(p, limit, value_length)) == nullptr) return nullptr;
   }
 
+  /// 读出来的条目的长度肯定是non_shared_key_length + value_length
+  /// 如果余下的空间没有这么多了
+  /// 那么肯定是出错了
   if (static_cast<uint32_t>(limit - p) < (*non_shared + *value_length)) {
     return nullptr;
   }
+
+  /// 返回non_shared_key + value 内容的超始点
+  /// 后面在使用的时候
+  /// (p, non_shared_key)就是非共享的key的内容
+  /// (p+non_shared_key, value_length)就是value的内容。
   return p;
 }
 
 class Block::Iter : public Iterator {
  private:
   const Comparator* const comparator_;
+  /// 指向第一个entry的指针。
   const char* const data_;       // underlying block contents
+  /// 第一个restart分区的偏移量。
   uint32_t const restarts_;      // Offset of restart array (list of fixed32)
+  /// restart分区的数目。
   uint32_t const num_restarts_;  // Number of uint32_t entries in restart array
 
   // current_ is offset in data_ of current entry.  >= restarts_ if !Valid
+  /// 指向某个entry。
   uint32_t current_;
+  /// 目前正要restart的current_所在的分区。
   uint32_t restart_index_;  // Index of restart block in which current_ falls
+  /// 当前itor指向的key，当前的key是完整的(shared_key + non_shared_key)。
   std::string key_;
+  /// 当前itor指向的value。
   Slice value_;
   Status status_;
 
@@ -94,21 +152,29 @@ class Block::Iter : public Iterator {
 
   // Return the offset in data_ just past the end of the current entry.
   inline uint32_t NextEntryOffset() const {
+    /// value_.data() + value_.size()是一个内存指针，指向了next entry的起始位置，
+    /// 那么再减去data_，就可以得到next entry的offset。
     return (value_.data() + value_.size()) - data_;
   }
 
   uint32_t GetRestartPoint(uint32_t index) {
     assert(index < num_restarts_);
+    /// data_ + restarts_获取第一个restart分区的地址，然后通过index找到要restart的
+    /// 分区的offset。
     return DecodeFixed32(data_ + restarts_ + index * sizeof(uint32_t));
   }
 
   void SeekToRestartPoint(uint32_t index) {
+    /// 移动到新的restart point，那么说明当前的key_是旧值，直接舍弃。
     key_.clear();
+    /// 移动restart_index_。
     restart_index_ = index;
     // current_ will be fixed by ParseNextKey();
 
     // ParseNextKey() starts at the end of value_, so set value_ accordingly
+    /// 获取restart_index_所对应的offset。
     uint32_t offset = GetRestartPoint(index);
+    /// value_指向index对应的restart分区的起始位置。
     value_ = Slice(data_ + offset, 0);
   }
 
@@ -124,12 +190,16 @@ class Block::Iter : public Iterator {
     assert(num_restarts_ > 0);
   }
 
+  /// 查看offset是否跑到了restart区域去了。
   bool Valid() const override { return current_ < restarts_; }
   Status status() const override { return status_; }
+
+  /// 当前current_所指向的kv中的key。
   Slice key() const override {
     assert(Valid());
     return key_;
   }
+  /// 当前current_所指向的kv中的value。
   Slice value() const override {
     assert(Valid());
     return value_;
@@ -144,9 +214,12 @@ class Block::Iter : public Iterator {
     assert(Valid());
 
     // Scan backwards to a restart point before current_
+    /// 保存当前指针。
     const uint32_t original = current_;
+    /// 从当前restart分区一直往上一个分区遍历。
     while (GetRestartPoint(restart_index_) >= original) {
       if (restart_index_ == 0) {
+        /// 如果遍历到了头，那就直接返回。
         // No more entries
         current_ = restarts_;
         restart_index_ = num_restarts_;
@@ -155,7 +228,9 @@ class Block::Iter : public Iterator {
       restart_index_--;
     }
 
+    /// 跳出while说明找到了对应的restart分区。跳跃到该分区的第一个entry。
     SeekToRestartPoint(restart_index_);
+    /// 遍历对应分区，找到original的上一个entry。
     do {
       // Loop until end of current entry hits the start of original entry
     } while (ParseNextKey() && NextEntryOffset() < original);
@@ -168,6 +243,7 @@ class Block::Iter : public Iterator {
     uint32_t right = num_restarts_ - 1;
     int current_key_compare = 0;
 
+    /// 第一遍二分找到target可能在的restart分区。
     if (Valid()) {
       // If we're already scanning, use the current position as a starting
       // point. This is beneficial if the key we're seeking to is ahead of the
@@ -184,6 +260,7 @@ class Block::Iter : public Iterator {
       }
     }
 
+    /// 第二遍是对entry进行的。
     while (left < right) {
       uint32_t mid = (left + right + 1) / 2;
       uint32_t region_offset = GetRestartPoint(mid);
@@ -227,12 +304,19 @@ class Block::Iter : public Iterator {
   }
 
   void SeekToFirst() override {
+    /// 移动到第一个restart分区的第一个entry处。
     SeekToRestartPoint(0);
+    /// 当前：
+    /// restart_index_ = index;
+    /// value_ = Slice(data_ + offset, 0);
+    /// 通过这两个值进行解析。
     ParseNextKey();
   }
 
   void SeekToLast() override {
+    /// 从最后一个restart point开始解析。
     SeekToRestartPoint(num_restarts_ - 1);
+    /// 由于一个start point可能有多个entry，所以需要while遍历到最后一个entry。
     while (ParseNextKey() && NextEntryOffset() < restarts_) {
       // Keep skipping
     }
@@ -248,8 +332,12 @@ class Block::Iter : public Iterator {
   }
 
   bool ParseNextKey() {
+    /// 如果value的size被设为0，那么就是当前entry的offset。
+    /// 否则就返回下一个entry的offset。
     current_ = NextEntryOffset();
+    /// 拿到应该解析的内存的起始位置。
     const char* p = data_ + current_;
+    /// 不应该超出内存位置。
     const char* limit = data_ + restarts_;  // Restarts come right after data
     if (p >= limit) {
       // No more entries to return.  Mark as invalid.
@@ -260,14 +348,19 @@ class Block::Iter : public Iterator {
 
     // Decode next entry
     uint32_t shared, non_shared, value_length;
+    /// 通过起始位置p进行编码。依次解析出三个长度。
     p = DecodeEntry(p, limit, &shared, &non_shared, &value_length);
     if (p == nullptr || key_.size() < shared) {
       CorruptionError();
       return false;
     } else {
+      /// resize会在上一个key的基础上，将non_shared去除。
       key_.resize(shared);
+      /// 然后在shared末尾append当前entry的non_shared。
       key_.append(p, non_shared);
+      /// 取完整的value。
       value_ = Slice(p + non_shared, value_length);
+      /// 移动完成之后，需要看一下是不是需要移动restart_index。
       while (restart_index_ + 1 < num_restarts_ &&
              GetRestartPoint(restart_index_ + 1) < current_) {
         ++restart_index_;
@@ -278,9 +371,11 @@ class Block::Iter : public Iterator {
 };
 
 Iterator* Block::NewIterator(const Comparator* comparator) {
+  /// 至少是4bytes，因为如果num_restarts_为0，那也要4bytes保存该变量。
   if (size_ < sizeof(uint32_t)) {
     return NewErrorIterator(Status::Corruption("bad block contents"));
   }
+  /// 获取需要restarts的分区数量。
   const uint32_t num_restarts = NumRestarts();
   if (num_restarts == 0) {
     return NewEmptyIterator();

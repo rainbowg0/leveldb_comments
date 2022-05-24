@@ -87,6 +87,7 @@ int VarintLength(uint64_t v) {
 const char* GetVarint32PtrFallback(const char* p, const char* limit,
                                    uint32_t* value) {
   uint32_t result = 0;
+  /// 最多分配5byte
   for (uint32_t shift = 0; shift <= 28 && p < limit; shift += 7) {
     uint32_t byte = *(reinterpret_cast<const uint8_t*>(p));
     p++;
