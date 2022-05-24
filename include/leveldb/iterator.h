@@ -12,6 +12,15 @@
 // non-const method, all threads accessing the same Iterator must use
 // external synchronization.
 
+/// 所有使用Iterator接口的模块：
+/// Block::Iter
+/// MergingIterator
+/// EmptyIterator
+/// TwoLevelIterator
+/// Version::LevelFileNumIterator
+/// DBIter
+/// MemtableIterator
+
 #ifndef STORAGE_LEVELDB_INCLUDE_ITERATOR_H_
 #define STORAGE_LEVELDB_INCLUDE_ITERATOR_H_
 
@@ -83,6 +92,7 @@ class LEVELDB_EXPORT Iterator {
  private:
   // Cleanup functions are stored in a single-linked list.
   // The list's head node is inlined in the iterator.
+  /// 销毁时会遍历所有的cleanup_node，调用func来完成资源的释放。
   struct CleanupNode {
     // True if the node is not used. Only head nodes might be unused.
     bool IsEmpty() const { return function == nullptr; }
