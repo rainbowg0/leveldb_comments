@@ -42,10 +42,15 @@ class FilterBlockBuilder {
   void GenerateFilter();
 
   const FilterPolicy* policy_;
+  /// keys_是将所有的key连接成一个大的string。
   std::string keys_;             // Flattened key contents
+  /// 对keys_中每个key的开始位置的索引。
   std::vector<size_t> start_;    // Starting index in keys_ of each key
+  /// 一个filter计算之后得到的输出，例如bloom filter在经过映射后得到了filter_str，
+  /// 这个filter_str就是放在了result_中。
   std::string result_;           // Filter data computed so far
   std::vector<Slice> tmp_keys_;  // policy_->CreateFilter() argument
+  /// 配合着result_一起使用，就是每个filter对应的filter_str的偏移量。
   std::vector<uint32_t> filter_offsets_;
 };
 
@@ -56,8 +61,11 @@ class FilterBlockReader {
   bool KeyMayMatch(uint64_t block_offset, const Slice& key);
 
  private:
+  /// 这边是用的是bloom过滤器。
   const FilterPolicy* policy_;
+  /// meta block的开始处。
   const char* data_;    // Pointer to filter data (at block-start)
+  /// filter offset的开始处。
   const char* offset_;  // Pointer to beginning of offset array (at block-end)
   size_t num_;          // Number of entries in offset array
   size_t base_lg_;      // Encoding parameter (see kFilterBaseLg in .cc file)
