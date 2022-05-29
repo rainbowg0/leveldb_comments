@@ -34,6 +34,12 @@
 /// (2) 节点被链接到SkipList后除了next/prev，其他属性不能被修改。
 ///     如果要修改，只能通过Insert()。
 
+/// 基于以下特点，skiplist中操作不需要锁或者node的引用计数：
+/// (1) skiplist中node内保存的是InternalKey与相应的value组成的数据，SequenceNumber
+///     的全局唯一性保证了不会有相同的node出现，也就保证了不会有node被更新。
+/// (2) delete操作等同于put，所以不需要引用计数记录node的存活周期。
+/// (3) node只会在skiplist销毁时才会销毁。
+
 #include <atomic>
 #include <cassert>
 #include <cstdlib>
@@ -43,11 +49,6 @@
 
 namespace leveldb {
 
-/// 基于以下两个特点，skiplist中操作不需要锁或者node的引用计数：
-/// (1) skiplist中node内保存的是InternalKey与相应的value组成的数据，SequenceNumber
-///     的全局唯一性保证了不会有相同的node出现，也就保证了不会有node被更新。
-/// (2) delete操作等同于put，所以不需要引用计数记录node的存活周期。
-/// (3) node只会在skiplist销毁时才会销毁。
 
 template <typename Key, class Comparator>
 class SkipList {
@@ -182,23 +183,10 @@ struct SkipList<Key, Comparator>::Node {
     assert(n >= 0);
     // Use a 'release store' so that anybody who reads through this
     // pointer observes a fully initialized version of the inserted node.
-    /// release：在这次store之后，当前线程的读写不能被reorder
-    /// 所有在当前线程的写入被其他acquire了相同的原子变量的线程可见。（release-acquire）
     next_[n].store(x, std::memory_order_release);
   }
 
   // No-barrier variants that can be safely used in a few locations.
-  /// relax：：没有对其他读取或写入施加同步或排序约束，仅保证此操作的原子性。
-  /// relax-ordering：标记为 memory_order_relaxed 的原子操作不是同步操作。
-  /// 它们不会在并发内存访问之间强加顺序。它们只保证原子性和修改顺序的一致性。
-  /// 例如：
-  /// Thread 1:
-  /// r1 = y.load(std::memory_order_relaxed); // A
-  /// x.store(r1, std::memory_order_relaxed); // B
-  /// Thread 2:
-  /// r2 = x.load(std::memory_order_relaxed); // C
-  /// y.store(42, std::memory_order_relaxed); // D
-  /// 可能会出现r1 == r2 == 42的结果。
   Node* NoBarrier_Next(int n) {
     assert(n >= 0);
     return next_[n].load(std::memory_order_relaxed);

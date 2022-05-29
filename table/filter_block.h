@@ -41,7 +41,10 @@ class FilterBlockBuilder {
  private:
   void GenerateFilter();
 
+  /// 目前只有一个：bloom filter
   const FilterPolicy* policy_;
+  /// keys_和start_都是用于生成一个filter entry，也就是说，每次调用GenerateFilter，
+  /// 就会将keys_和start_清空。
   /// keys_是将所有的key连接成一个大的string。
   std::string keys_;             // Flattened key contents
   /// 对keys_中每个key的开始位置的索引。

@@ -12,29 +12,8 @@
 /// 真正写入到磁盘是依靠writer。
 /// meta block存储一些data block的信息。
 
-/// SST文件格式
-/// +---------------------+
-/// | <beginning of file> |
-/// +---------------------+
-/// |     data block1     |
-/// +---------------------+
-/// |     data block2     |
-/// +---------------------+
-/// |         ...         |
-/// +---------------------+
-/// |     data blockN     |
-/// +---------------------+
-/// |     meta block1     |
-/// +---------------------+
-/// |   meta block idx    |
-/// +---------------------+
-/// |   data block idx    |
-/// +---------------------+
-/// |    <end of file>    |
-/// +---------------------+
-
 /// meta block结构
-/// +---------------------+
+/// +---------------------+ <----------------------- result_
 /// |       filter1       | <---+
 /// +---------------------+     ｜
 /// |       filter2       | <---｜--+
@@ -42,7 +21,7 @@
 /// |         ...         |     ｜  ｜
 /// +---------------------+     ｜  ｜
 /// |       filterN       | <---｜--｜--+
-/// +---------------------+ <---｜--｜--｜---+
+/// +---------------------+ <---｜--｜--｜---+------- filter_offsets_
 /// |   filter1 offset    | ----+   ｜  ｜  ｜
 /// +---------------------+         ｜  ｜  ｜
 /// |   filter2 offset    | --------+   ｜  ｜
@@ -56,9 +35,7 @@
 /// |       g(base)       |
 /// +---------------------+
 
-
-
-/// 一般来说，只有一个meta block，block每次达到2K byte创建一个新filter。
+/// 一般来说，只有一个meta block，data block每次达到2KB创建一个新filter。
 
 namespace leveldb {
 
@@ -71,6 +48,7 @@ static const size_t kFilterBase = 1 << kFilterBaseLg;
 FilterBlockBuilder::FilterBlockBuilder(const FilterPolicy* policy)
     : policy_(policy) {}
 
+/// block_offset指的是sstable文件的offset。
 void FilterBlockBuilder::StartBlock(uint64_t block_offset) {
   /// 每隔2K创建一个新的filter，filter_index代表了当前filter总数。
   uint64_t filter_index = (block_offset / kFilterBase);
@@ -118,7 +96,6 @@ void FilterBlockBuilder::GenerateFilter() {
   }
 
   // Make list of keys from flattened key structure
-  /// 添加了一个新key。（如果没有新key，添加一个offset 0也是合理的）
   start_.push_back(keys_.size());  // Simplify length computation
   tmp_keys_.resize(num_keys);
   for (size_t i = 0; i < num_keys; i++) {

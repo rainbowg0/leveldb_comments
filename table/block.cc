@@ -24,13 +24,13 @@
 /// |       ...        | <-｜-+
 /// +------------------+   ｜ ｜
 /// |      entryN      |   ｜ ｜
-/// +------------------+ <-｜-｜---------- restarts_
+/// +------------------+ <-｜-｜---------- data_ + restart_offset_
 /// |    restart[0]    | --+  ｜
 /// +------------------+      ｜
 /// |    restart[1]    | -----+
 /// +------------------+
 /// |   num_restart    | <--------------- num_restarts_
-/// +------------------+ <--------------- size_
+/// +------------------+ <--------------- data_ + size_
 
 /// 每个entry的内容：
 /// +-----------------------------------------------------------------------+
@@ -53,7 +53,6 @@ inline uint32_t Block::NumRestarts() const {
   assert(size_ >= sizeof(uint32_t));
   /// data_+size_找到block的最后，
   /// 然后通过-4获取最后一个4byte长度的数据类型也就是获取block的末尾的restarts。
-  /// size_是到trailer为止，不包括trailer。
   return DecodeFixed32(data_ + size_ - sizeof(uint32_t));
 }
 
@@ -118,10 +117,9 @@ static inline const char* DecodeEntry(const char* p, const char* limit,
     return nullptr;
   }
 
-  /// 返回non_shared_key + value 内容的超始点
   /// 后面在使用的时候
-  /// (p, non_shared_key)就是非共享的key的内容
-  /// (p+non_shared_key, value_length)就是value的内容。
+  /// (p, non_shared_length)就是非共享的key的内容
+  /// (p+non_shared_length, value_length)就是value的内容。
   return p;
 }
 
@@ -159,8 +157,7 @@ class Block::Iter : public Iterator {
 
   uint32_t GetRestartPoint(uint32_t index) {
     assert(index < num_restarts_);
-    /// data_ + restarts_获取第一个restart分区的地址，然后通过index找到要restart的
-    /// 分区的offset。
+    /// data_ + restarts_获取第一个restart分区的地址，然后通过index找到restarts_[index]。
     return DecodeFixed32(data_ + restarts_ + index * sizeof(uint32_t));
   }
 
@@ -243,7 +240,7 @@ class Block::Iter : public Iterator {
     uint32_t right = num_restarts_ - 1;
     int current_key_compare = 0;
 
-    /// 第一遍二分找到target可能在的restart分区。
+    /// 如果current_有效，比较当前key_与target，缩小区间。
     if (Valid()) {
       // If we're already scanning, use the current position as a starting
       // point. This is beneficial if the key we're seeking to is ahead of the
@@ -260,7 +257,7 @@ class Block::Iter : public Iterator {
       }
     }
 
-    /// 第二遍是对entry进行的。
+    /// 对restart区间进行二分，找到小于target的最大restart区间。
     while (left < right) {
       uint32_t mid = (left + right + 1) / 2;
       uint32_t region_offset = GetRestartPoint(mid);
@@ -287,6 +284,8 @@ class Block::Iter : public Iterator {
     // We might be able to use our current position within the restart block.
     // This is true if we determined the key we desire is in the current block
     // and is after than the current key.
+    /// 当前已来到小于target的最大restart区间。
+    /// 对该区间进行线性查找，直到找到target，或者找到第一个大于target的entry，或者到达末尾。
     assert(current_key_compare == 0 || Valid());
     bool skip_seek = left == restart_index_ && current_key_compare < 0;
     if (!skip_seek) {

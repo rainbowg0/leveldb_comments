@@ -39,7 +39,7 @@ namespace {
 // external reference.
 
 /// LRUCache由两个重要部分组成：
-/// (1) LRUHandle：作为hash_table中的元素出现。
+/// (1) LRUHandle：作为hash_table中的bucket出现。
 /// (2) HandleTable：作为hash_table的形式出现。
 
 ///   HandleTable

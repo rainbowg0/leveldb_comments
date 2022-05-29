@@ -35,7 +35,7 @@ class Block {
 
   /// 起始entry的地址。
   const char* data_;
-  /// 整个block的大小。
+  /// 整个block的大小。通过data_ + size_可以找到block最后。
   size_t size_;
   uint32_t restart_offset_;  // Offset in data_ of restart array
   /// 是否拥有这个数据，自己负责数据的申请和释放。
