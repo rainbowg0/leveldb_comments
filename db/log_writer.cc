@@ -14,20 +14,24 @@ namespace leveldb {
 namespace log {
 
 /// 一个block中可能有多个record，但并不是以block为最小单位进行I/O的，而是以record进行I/O.
-/// block的组成：
-/// |---------|
+/// log block的组成：
+/// +---------+
 /// | record0 |
+/// +---------+
 /// | record1 |
+/// +---------+
 /// | ....... |
-/// | recordn |
+/// +---------+
+/// | recordN |
+/// +---------+
 /// | trailer |
-/// | --------|
+/// +---------+
 /// trailer：如果block最后部分小于record的kHeaderSize，剩余部分为trailer，填0不用。
 
 /// record组成：
-/// -------------------------------–––––––––––------------------------
+/// +------------------------------–––––––––––-----------------------+
 /// | checksum(uint32) | length(uint16) | type(uint8) | data(length) |
-/// -------------------------------–––––––––––------------------------
+/// +------------------------------–––––––––––-----------------------+
 /// + checksum： 记录的是type和data的crc校验
 /// + length：是record内部保存的data长度（小端）
 /// + 共5种record types：
@@ -42,7 +46,7 @@ static void InitTypeCrc(uint32_t* type_crc) {
   for (int i = 0; i <= kMaxRecordType; i++) {
     char t = static_cast<char>(i);
     /// crc32c返回的是crc形式的数据n。
-    /// 初始化所有的5中record type。
+    /// 初始化所有的5种record type。
     type_crc[i] = crc32c::Value(&t, 1);
   }
 }
@@ -77,11 +81,13 @@ Status Writer::AddRecord(const Slice& slice) {
     if (leftover < kHeaderSize) {
       /// 如果剩余size比header还小，那就重新分配一个块。
       // Switch to a new block
+      /// 把block剩余的填充。
       if (leftover > 0) {
         // Fill the trailer (literal below relies on kHeaderSize being 7)
         static_assert(kHeaderSize == 7, "");
         dest_->Append(Slice("\x00\x00\x00\x00\x00\x00", leftover));
       }
+      /// 从新block的offset = 0开始。
       block_offset_ = 0;
     }
 
@@ -134,10 +140,13 @@ Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr,
   EncodeFixed32(buf, crc);
 
   // Write the header and the payload
+  /// 写入header
   Status s = dest_->Append(Slice(buf, kHeaderSize));
   if (s.ok()) {
+    /// 写入data。
     s = dest_->Append(Slice(ptr, length));
     if (s.ok()) {
+      /// 以record为单位进行刷盘。
       s = dest_->Flush();
     }
   }

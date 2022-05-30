@@ -10,6 +10,11 @@
 #include "util/coding.h"
 #include "util/crc32c.h"
 
+/// 区分逻辑record和物理record：
+/// (1) 逻辑record：用户输出的一个完整slice。
+/// (2) 物理record：一个完整slice可能不能完全在log block里放下，所以需要物理record
+///     将逻辑record分为几个物理record，存储在block中。
+
 namespace leveldb {
 namespace log {
 
@@ -35,18 +40,19 @@ Reader::Reader(SequentialFile* file, Reporter* reporter, bool checksum,
 Reader::~Reader() { delete[] backing_store_; }
 
 /// 流程：
-/// (1) 通过 initial_offset % kBlockSize 找到块中偏移量，initial_offset减去
+/// (1) 通过 initial_offset % kBlockSize 找到文件中block的偏移量，initial_offset减去
 ///     偏移量获得当前块的起始位置。
 /// (2) 如果偏移量在后6字节处，起始位置往下移一个block，读取下一个block。
 /// (3) Skip block_start_location 字节，跳跃到指定位置读。
 bool Reader::SkipToInitialBlock() {
-  /// offset_in_block：从要读的block的下标开始读。
-  /// block_start_location：要读的block的起始下标。
+  /// offset_in_block：从要读的block的偏移量开始读。
+  /// block_start_location：要读的block的在文件中的偏移量。
   const size_t offset_in_block = initial_offset_ % kBlockSize;
   uint64_t block_start_location = initial_offset_ - offset_in_block;
 
   // Don't search a block if we'd be in the trailer
-  /// 如果从当前的block开始读，发现剩余size小于header，说明当前block不可能存储有record信息。
+  /// 如果从当前的block开始读，发现剩余size小于header，
+  /// 说明当前block不可能存储有record信息或者存储的信息无法读全。
   /// 那就进入下一个块开始读。
   if (offset_in_block > kBlockSize - 6) {
     block_start_location += kBlockSize;
@@ -69,7 +75,7 @@ bool Reader::SkipToInitialBlock() {
 }
 
 bool Reader::ReadRecord(Slice* record, std::string* scratch) {
-  /// 通过initial_offset_跳跃到指定位置。
+  /// 通过initial_offset_跳跃到文件中的指定block。
   if (last_record_offset_ < initial_offset_) {
     if (!SkipToInitialBlock()) {
       return false;
@@ -81,6 +87,7 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch) {
   bool in_fragmented_record = false;
   // Record offset of the logical record that we're reading
   // 0 is a dummy value to make compilers happy
+  /// 从当前block的第一个record开始读。
   uint64_t prospective_record_offset = 0;
 
   Slice fragment;
@@ -91,11 +98,13 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch) {
     // ReadPhysicalRecord may have only had an empty trailer remaining in its
     // internal buffer. Calculate the offset of the next physical record now
     // that it has returned, properly accounting for its header size.
+    /// 找到record在文件中的偏移量。
+    /// end_of_buffer_offset_就是当前block末尾在文件中的偏移量。
     uint64_t physical_record_offset =
         end_of_buffer_offset_ - buffer_.size() - kHeaderSize - fragment.size();
 
     /// 如果是在重启中
-    /// 跳过所有middle tye，直到遇到下一个record。
+    /// 跳过所有middle tye，直到遇到下一个逻辑record。
     if (resyncing_) {
       if (record_type == kMiddleType) {
         continue;
@@ -114,11 +123,15 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch) {
           // it could emit an empty kFirstType record at the tail end
           // of a block followed by a kFullType or kFirstType record
           // at the beginning of the next block.
+          /// 上一次读取到的是first/middle block，这一次应该读取的是middle/last block，
+          /// 但是读到了full block，逻辑有误。
           if (!scratch->empty()) {
             ReportCorruption(scratch->size(), "partial record without end(1)");
           }
         }
         prospective_record_offset = physical_record_offset;
+        /// scratch是负责将所有<first, middle, last> record收集并拼接。
+        /// 如果读到了full record，自然就不用拼接了。
         scratch->clear();
         *record = fragment;
         last_record_offset_ = prospective_record_offset;
@@ -131,10 +144,13 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch) {
           // of a block followed by a kFullType or kFirstType record
           // at the beginning of the next block.
           if (!scratch->empty()) {
+            /// 当前first record，前一个要么是碎片，要么是full
+            /// 不管哪一个，都已经是完整的record了，自然scratch是空的。
             ReportCorruption(scratch->size(), "partial record without end(2)");
           }
         }
         prospective_record_offset = physical_record_offset;
+        /// 将当前first record放入到scratch进行拼接。
         scratch->assign(fragment.data(), fragment.size());
         in_fragmented_record = true;
         break;
@@ -211,23 +227,33 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result) {
       if (!eof_) {
         // Last read was a full read, so this is a trailer to skip
         buffer_.clear();
+        /// 将整个block放入buffer_来为这一次读作准备。
+        /// 而backing_store_指向buffer_的起点。
         Status status = file_->Read(kBlockSize, &buffer_, backing_store_);
         end_of_buffer_offset_ += buffer_.size();
         if (!status.ok()) {
+          /// 从文件读取失败，终止读操作。
           buffer_.clear();
           ReportDrop(kBlockSize, status);
           eof_ = true;
           return kEof;
         } else if (buffer_.size() < kBlockSize) {
+          /// 读取成功了，但是并没有读取到整块，说明：
+          /// (1) 读取的size大于等于kHeaderSize，这是最后一个要读取的块
+          /// (2) 读取的size小于kHeaderSize，又一次发生错误。
+          /// 不管哪种情况，都eof了。
           eof_ = true;
         }
+        /// 进入下一轮循环。
         continue;
       } else {
         // Note that if buffer_ is non-empty, we have a truncated header at the
         // end of the file, which can be caused by the writer crashing in the
         // middle of writing the header. Instead of considering this an error,
         // just report EOF.
-        /// buffer_非空，但却是eof，说明有可能是write写到一半crash了。
+        /// 如果buffer_非空并且小于kHeaderSize，说明write时发生了错误，直接返回。
+        /// 当然，如果buffer_非空，并且eof，但是大于等于kHeaderSize，
+        /// 说明当前读取的是最后一个block，也不会走到这。
         buffer_.clear();
         return kEof;
       }
@@ -258,6 +284,7 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result) {
       return kEof;
     }
 
+    /// 发生这种情况的原因：写入record到block后，可能会遇到剩余7bytes的情况，只能写一个header。
     if (type == kZeroType && length == 0) {
       // Skip zero length record without reporting any drops since
       // such records are produced by the mmap based writing code in

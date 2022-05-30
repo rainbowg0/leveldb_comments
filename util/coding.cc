@@ -20,15 +20,20 @@ void PutFixed64(std::string* dst, uint64_t value) {
 
 char* EncodeVarint32(char* dst, uint32_t v) {
   // Operate on characters as unsigneds
-  /// 将其转变为unsigned
   uint8_t* ptr = reinterpret_cast<uint8_t*>(dst);
+  /// 第一个byte，也就是8bit。
   static const int B = 128;
   if (v < (1 << 7)) {
+    /// 可以放入第一个byte。
     *(ptr++) = v;
   } else if (v < (1 << 14)) {
+    /// 可以放入前两个byte。
+    /// 第一个byte的第8bit设为1。
     *(ptr++) = v | B;
     *(ptr++) = v >> 7;
   } else if (v < (1 << 21)) {
+    /// 可以放入前三个byte。
+    /// 第一第二个byte的第8bit设为1。
     *(ptr++) = v | B;
     *(ptr++) = (v >> 7) | B;
     *(ptr++) = v >> 14;
@@ -49,6 +54,7 @@ char* EncodeVarint32(char* dst, uint32_t v) {
 
 void PutVarint32(std::string* dst, uint32_t v) {
   char buf[5];
+  /// 对uint32_t进行编码
   char* ptr = EncodeVarint32(buf, v);
   dst->append(buf, ptr - buf);
 }
@@ -87,7 +93,8 @@ int VarintLength(uint64_t v) {
 const char* GetVarint32PtrFallback(const char* p, const char* limit,
                                    uint32_t* value) {
   uint32_t result = 0;
-  /// 最多分配5byte
+  /// varint32由1～5byte组成。也就是8～40bit。
+  /// 由于之前判定过一定不能再1byte内被表示，所以遍历从2～5byte，直到能够被表示。
   for (uint32_t shift = 0; shift <= 28 && p < limit; shift += 7) {
     uint32_t byte = *(reinterpret_cast<const uint8_t*>(p));
     p++;

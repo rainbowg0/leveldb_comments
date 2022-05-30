@@ -8,6 +8,16 @@
 #ifndef STORAGE_LEVELDB_DB_LOG_FORMAT_H_
 #define STORAGE_LEVELDB_DB_LOG_FORMAT_H_
 
+/// leveldb采用的是redo-log。
+/// log block的存储格式：每个block大小为32KB，里面有一条/多条record，每个record
+/// 带有一个checksum，来应对fault-tolerance。
+/// 这种存储方式有利有弊：
+/// (1) 利：如果磁盘损坏，直接跳过损坏的block就行。
+///         容易找到边界。
+///         单条大数据不需要分配很大的内存来做buffer。
+/// (2) 弊：小record存在浪费空间。
+///         没有压缩。
+
 namespace leveldb {
 namespace log {
 

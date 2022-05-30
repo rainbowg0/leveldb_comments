@@ -9,12 +9,35 @@
 #include "leveldb/iterator.h"
 #include "util/coding.h"
 
+/// key_data:
+/// +---------------------------------------+
+/// | raw_key | seqno(7byte) | type(1byte)  |
+/// +---------------------------------------+
+/// - raw_key：用户定义的key。
+/// - seqno：每次写操作都有一个sequence number，表示写入先后顺序。通过raw_key + seqno
+///          确保了不会产生两个相同的key。
+/// - type：更新(插入)/删除。
+/// InternalKey的排序顺序：先按照raw_key升序排序，再按照seqno降序排序。
+
+/// memtable中entry格式：
+/// +------------------------––––––––---------------------+
+/// |  key_size  |  key_data  | value_size |  value_data  |
+/// +------------------------––––––––---------------------+
+/// | (varint32) | (key_size) | (varint32) | (value_size) |
+/// +------------------------–––––––----------------------+
+/// - key_size = raw_key's size + 8(seqno's size + type's size)
+
+/// 所有内存中的kv都存储在memtable中，
+/// memtable到达阈值(Options.write_buffer_size)后，memtable转换为immutable memtable，
+/// 然后再生成一个新的memtable，并在后台将immutable memtable写入SST。
+/// 所以同时会存在两个memtable，一个不可修改，一个正在写入。
+
 namespace leveldb {
 
-/// data的前4byte保存的是data的长度。
 static Slice GetLengthPrefixedSlice(const char* data) {
   uint32_t len;
   const char* p = data;
+  /// 这边的varint最多占5byte。len用于返回key_data的长度。
   p = GetVarint32Ptr(p, p + 5, &len);  // +5: we assume "p" is not corrupted
   return Slice(p, len);
 }
@@ -32,6 +55,7 @@ size_t MemTable::ApproximateMemoryUsage() { return arena_.MemoryUsage(); }
 int MemTable::KeyComparator::operator()(const char* aptr,
                                         const char* bptr) const {
   // Internal keys are encoded as length-prefixed strings.
+  /// 获得aptr和bptr的key_data(raw_key + seqno + type)。
   Slice a = GetLengthPrefixedSlice(aptr);
   Slice b = GetLengthPrefixedSlice(bptr);
   return comparator.Compare(a, b);
@@ -42,9 +66,9 @@ int MemTable::KeyComparator::operator()(const char* aptr,
 // into this scratch space.
 static const char* EncodeKey(std::string* scratch, const Slice& target) {
   scratch->clear();
-  /// 将size转变为char放入string的开始位置
+  /// 将size转变为char放入string的开始位置，其中对size通过varint进行压缩。
   PutVarint32(scratch, target.size());
-  /// string的剩余位置放char数组
+  /// 之后将key_data继续放入key_size之后。
   scratch->append(target.data(), target.size());
   /// string->data() 返回的是字符串中指向char数组的指针。
   return scratch->data();
@@ -109,7 +133,7 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
                              val_size;
   /// 分配encoded_len大小的一块内存。
   char* buf = arena_.Allocate(encoded_len);
-  /// 将internal_key_size保存在p的前几位中
+  /// 将internal_key_size保存在buf的前几位中
   char* p = EncodeVarint32(buf, internal_key_size);
   /// 直接将key放入分配的内存。
   std::memcpy(p, key.data(), key_size);

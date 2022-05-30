@@ -102,16 +102,23 @@ inline uint64_t DecodeFixed64(const char* ptr) {
          (static_cast<uint64_t>(buffer[7]) << 56);
 }
 
+/// varint是一种紧凑的表示数字的方式，用一个/多个字节表示一个数字，值越小，使用的字节数越少。
+/// 例如：对于int32，需要4byte，但是使用varint需要1～5byte。
+/// varint中每个byte的最高bit表示：
+/// 如果为1：表示还需要后续byte才能构成varint所表示的数。
+/// 如果为0：varint表示的数可以由其余7bit组成。
 // Internal routine for use by fallback path of GetVarint32Ptr
 const char* GetVarint32PtrFallback(const char* p, const char* limit,
                                    uint32_t* value);
 inline const char* GetVarint32Ptr(const char* p, const char* limit,
                                   uint32_t* value) {
   if (p < limit) {
-    /// 处理只有1byte的情况，否则就转发给GetVarint32PtrFallback。
     uint32_t result = *(reinterpret_cast<const uint8_t*>(p));
+    /// 一个byte由8bit组成，如果第8bit为0，说明其余7bit能够表示。
     if ((result & 128) == 0) {
       *value = result;
+      /// 为什么要+1？
+      /// 原先的p可以由1byt表示长度，p+1就是跳过长度，指向下一个数据。
       return p + 1;
     }
   }
