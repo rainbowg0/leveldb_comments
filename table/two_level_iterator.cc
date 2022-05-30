@@ -57,14 +57,20 @@ class TwoLevelIterator : public Iterator {
   void SetDataIterator(Iterator* data_iter);
   void InitDataBlock();
 
+  /// 指向Table::BlockReader()函数。
   BlockFunction block_function_;
+  /// 指向table的指针。
   void* arg_;
   const ReadOptions options_;
   Status status_;
+  /// 第一级迭代，data_block_index::iterator
   IteratorWrapper index_iter_;
+  /// 第二级迭代，data_block::iterator
+  /// 会使用cache加速访问。
   IteratorWrapper data_iter_;  // May be nullptr
   // If data_iter_ is non-null, then "data_block_handle_" holds the
   // "index_value" passed to block_function_ to create the data_iter_.
+  /// data block的offset + size组合。
   std::string data_block_handle_;
 };
 
@@ -80,9 +86,13 @@ TwoLevelIterator::TwoLevelIterator(Iterator* index_iter,
 TwoLevelIterator::~TwoLevelIterator() = default;
 
 void TwoLevelIterator::Seek(const Slice& target) {
+  /// 得到index_iter_->Value()
   index_iter_.Seek(target);
+  /// 通过index_iter生成data_iter。
   InitDataBlock();
+  /// 在data_iter中寻找target。
   if (data_iter_.iter() != nullptr) data_iter_.Seek(target);
+  /// 跳跃到下一个有效data block的起始位置，并更新data_iter_。
   SkipEmptyDataBlocksForward();
 }
 
@@ -112,19 +122,25 @@ void TwoLevelIterator::Prev() {
   SkipEmptyDataBlocksBackward();
 }
 
+/// data_iter_无效的话，不断尝试下一个data block并定位到起始位置。
 void TwoLevelIterator::SkipEmptyDataBlocksForward() {
   while (data_iter_.iter() == nullptr || !data_iter_.Valid()) {
     // Move to next block
+    /// index_iter_无效了，data_iter_也就同样无效。
     if (!index_iter_.Valid()) {
       SetDataIterator(nullptr);
       return;
     }
+    /// 跳跃到下一个data block。
+    /// 通过index_iter_的handle更新data_iter_。
     index_iter_.Next();
     InitDataBlock();
+    /// data_iter_确保在data block的开始位置。
     if (data_iter_.iter() != nullptr) data_iter_.SeekToFirst();
   }
 }
 
+/// data_iter_无效的话，不断尝试上一个data block并定位到结束位置。
 void TwoLevelIterator::SkipEmptyDataBlocksBackward() {
   while (data_iter_.iter() == nullptr || !data_iter_.Valid()) {
     // Move to next block
@@ -143,16 +159,20 @@ void TwoLevelIterator::SetDataIterator(Iterator* data_iter) {
   data_iter_.Set(data_iter);
 }
 
+/// 从第一级迭代生成第二级迭代。
 void TwoLevelIterator::InitDataBlock() {
   if (!index_iter_.Valid()) {
     SetDataIterator(nullptr);
   } else {
+    /// 获取data block的offset + size组合。
     Slice handle = index_iter_.value();
     if (data_iter_.iter() != nullptr &&
         handle.compare(data_block_handle_) == 0) {
       // data_iter_ is already constructed with this iterator, so
       // no need to change anything
+      /// 当前已经指向了对应的data block了，就不用管了。
     } else {
+      /// 调用Table::BlockReader，生成新的data_iter，也就是二级迭代。
       Iterator* iter = (*block_function_)(arg_, options_, handle);
       data_block_handle_.assign(handle.data(), handle.size());
       SetDataIterator(iter);
