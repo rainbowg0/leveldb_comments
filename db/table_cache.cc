@@ -9,9 +9,18 @@
 #include "leveldb/table.h"
 #include "util/coding.h"
 
+/// table_cache缓存Table对象，每个DB一个。
+/// table_cache的格式：
+/// +------------------------------------------+
+/// | file_number(key) | TableAfterFile(value) |
+/// +------------------------------------------+
+
 namespace leveldb {
 
 struct TableAndFile {
+  /// 每个table有一个TableAndFile，由于SST很大，一般不回全部加载进内存。
+  /// 只会加载data_index_block 和 meta_block，实际的data_block需要等到操作
+  /// 时才会加载进内存。
   RandomAccessFile* file;
   Table* table;
 };
@@ -41,14 +50,17 @@ TableCache::~TableCache() { delete cache_; }
 Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
                              Cache::Handle** handle) {
   Status s;
+  /// 将file_number构建成slice形式，通过slice查找TableAndFile。
   char buf[sizeof(file_number)];
   EncodeFixed64(buf, file_number);
   Slice key(buf, sizeof(buf));
   *handle = cache_->Lookup(key);
   if (*handle == nullptr) {
+    /// 通过 (db name + file_number) 构建file name。
     std::string fname = TableFileName(dbname_, file_number);
     RandomAccessFile* file = nullptr;
     Table* table = nullptr;
+    //  TODO ???----------------------
     s = env_->NewRandomAccessFile(fname, &file);
     if (!s.ok()) {
       std::string old_fname = SSTTableFileName(dbname_, file_number);
@@ -59,6 +71,7 @@ Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
     if (s.ok()) {
       s = Table::Open(options_, file, file_size, &table);
     }
+    //  TODO ???----------------------
 
     if (!s.ok()) {
       assert(table == nullptr);
@@ -75,6 +88,14 @@ Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
   return s;
 }
 
+/**
+ * 返回file number指定的iter，并将tableptr指向Table。tableptr owned by cache。
+ * @param options 一些用户指定选项。
+ * @param file_number 要迭代的file编号。
+ * @param file_size 要迭代的file大小。
+ * @param tableptr 塞入一个指向table的指针。
+ * @return
+ */
 Iterator* TableCache::NewIterator(const ReadOptions& options,
                                   uint64_t file_number, uint64_t file_size,
                                   Table** tableptr) {
@@ -83,13 +104,18 @@ Iterator* TableCache::NewIterator(const ReadOptions& options,
   }
 
   Cache::Handle* handle = nullptr;
+  /// 找到TableAndFile。
   Status s = FindTable(file_number, file_size, &handle);
   if (!s.ok()) {
     return NewErrorIterator(s);
   }
 
+  /// 找到SST。
   Table* table = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+  /// 构建two_level_iter。
   Iterator* result = table->NewIterator(options);
+  /// 这个iter如何释放？
+  /// 由于是为cache所有，销毁是调用cache的Release。
   result->RegisterCleanup(&UnrefEntry, cache_, handle);
   if (tableptr != nullptr) {
     *tableptr = table;
@@ -97,6 +123,16 @@ Iterator* TableCache::NewIterator(const ReadOptions& options,
   return result;
 }
 
+/**
+ * 通过file_number找到SST，然后通过SST找到data_block中k对应的value，存放在arg中。
+ * @param options
+ * @param file_number
+ * @param file_size
+ * @param k
+ * @param arg
+ * @param handle_result
+ * @return
+ */
 Status TableCache::Get(const ReadOptions& options, uint64_t file_number,
                        uint64_t file_size, const Slice& k, void* arg,
                        void (*handle_result)(void*, const Slice&,
@@ -104,7 +140,9 @@ Status TableCache::Get(const ReadOptions& options, uint64_t file_number,
   Cache::Handle* handle = nullptr;
   Status s = FindTable(file_number, file_size, &handle);
   if (s.ok()) {
+    /// 找到SST。
     Table* t = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+    /// 通过SST获取entry。
     s = t->InternalGet(options, k, arg, handle_result);
     cache_->Release(handle);
   }

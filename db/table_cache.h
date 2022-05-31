@@ -51,6 +51,7 @@ class TableCache {
   Status FindTable(uint64_t file_number, uint64_t file_size, Cache::Handle**);
 
   Env* const env_;
+  /// 一个db一个table_cache，一个table_cache缓存多个table。
   const std::string dbname_;
   const Options& options_;
   Cache* cache_;
