@@ -7,6 +7,22 @@
 #include "db/version_set.h"
 #include "util/coding.h"
 
+/// compact过程的一系列改变当前version的操作：
+/// - file_number的增加
+/// - 删除input的SST
+/// - 增加输出的SST
+/// ...
+/// 为了缩小version切换的时间点，将这些操作封装成VersionEdit。
+/// compact完成时，将VersionEdit中的操作一次应用到当前Version就可得到最新状态的Version。
+
+/// VersionEdit与Version的区别是delta类型和常量类型的区别：
+/// 常量类型描述的是一个静态的状态，不可更改。（A：手里有一个苹果）
+/// delta类型是增量类型。（B：别人给我了一个苹果）
+/// 那么常量类型加上delta类型就是另一个常量类型，例如：
+/// A + B = C (
+/// Version1 +(VersionSet::Builder) + VersionEdit = Version2
+/// C就是手里有两个苹果。
+
 namespace leveldb {
 
 // Tag numbers for serialized VersionEdit.  These numbers are written to
@@ -40,10 +56,18 @@ void VersionEdit::Clear() {
 }
 
 void VersionEdit::EncodeTo(std::string* dst) const {
+  /// comparator_编码方式：
+  /// +---------------------------------------------------------------------------+
+  /// | size(var32) | comparator_'s size(var32) | comparator_(comparator_'s size) |
+  /// +---------------------------------------------------------------------------+
   if (has_comparator_) {
     PutVarint32(dst, kComparator);
     PutLengthPrefixedSlice(dst, comparator_);
   }
+  /// 下面的4个都是以下形式编码的：
+  /// +------------------––––-----+
+  /// | size(var32) | data(var64) |
+  /// +-----------------–––––-----+
   if (has_log_number_) {
     PutVarint32(dst, kLogNumber);
     PutVarint64(dst, log_number_);
@@ -61,18 +85,30 @@ void VersionEdit::EncodeTo(std::string* dst) const {
     PutVarint64(dst, last_sequence_);
   }
 
+  /// compact_pointers_编码方式：
+  /// +--------------------------------------------------------------+
+  /// | tag(var32) | level(var32) | size(var32) | internal_key(size) |
+  /// +--------------------------------------------------------------+
   for (size_t i = 0; i < compact_pointers_.size(); i++) {
     PutVarint32(dst, kCompactPointer);
     PutVarint32(dst, compact_pointers_[i].first);  // level
     PutLengthPrefixedSlice(dst, compact_pointers_[i].second.Encode());
   }
 
+  /// deleted_files_编码方式：
+  /// +------------------------------------------------+
+  /// | tag(var32) | level(var32) | file_number(var64) |
+  /// +------------------------------------------------+
   for (const auto& deleted_file_kvp : deleted_files_) {
     PutVarint32(dst, kDeletedFile);
     PutVarint32(dst, deleted_file_kvp.first);   // level
     PutVarint64(dst, deleted_file_kvp.second);  // file number
   }
 
+  /// new_files_结构：
+  /// +------------------------------------------------------------+
+  /// | tag | level | file_number | file_size | smallest | largest |
+  /// +------------------------------------------------------------+
   for (size_t i = 0; i < new_files_.size(); i++) {
     const FileMetaData& f = new_files_[i].second;
     PutVarint32(dst, kNewFile);
@@ -86,6 +122,7 @@ void VersionEdit::EncodeTo(std::string* dst) const {
 
 static bool GetInternalKey(Slice* input, InternalKey* dst) {
   Slice str;
+  /// input中保存了size+data，取出data。
   if (GetLengthPrefixedSlice(input, &str)) {
     return dst->DecodeFrom(str);
   } else {
@@ -95,6 +132,7 @@ static bool GetInternalKey(Slice* input, InternalKey* dst) {
 
 static bool GetLevel(Slice* input, int* level) {
   uint32_t v;
+  /// input前几byte保存了var32，取出作为level。
   if (GetVarint32(input, &v) && v < config::kNumLevels) {
     *level = v;
     return true;

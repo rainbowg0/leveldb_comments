@@ -15,13 +15,19 @@ namespace leveldb {
 
 class VersionSet;
 
+/// SST文件的元信息封装为FileMetaData。
 struct FileMetaData {
   FileMetaData() : refs(0), allowed_seeks(1 << 30), file_size(0) {}
 
+  /// 引用计数。
   int refs;
+  /// compact之前允许的seek次数。
   int allowed_seeks;  // Seeks allowed until compaction
+  /// file number。
   uint64_t number;
+  /// 文件大小。
   uint64_t file_size;    // File size in bytes
+  /// SST中的最小和最大key，构成一个区间：[smallest, largest]。
   InternalKey smallest;  // Smallest internal key served by table
   InternalKey largest;   // Largest internal key served by table
 };
@@ -85,19 +91,29 @@ class VersionEdit {
 
   typedef std::set<std::pair<int, uint64_t>> DeletedFileSet;
 
+  /// db创建后，排序逻辑通过comparator_保持兼容。
   std::string comparator_;
+  /// log文件的file_number。
   uint64_t log_number_;
+  /// 辅助log文件的file_number。
   uint64_t prev_log_number_;
+  /// 下一个可用的file_number。
   uint64_t next_file_number_;
+  /// 使用过的最后一个SequenceNumber。
   SequenceNumber last_sequence_;
+
+  /// 对前几个成员标识是否存在。
   bool has_comparator_;
   bool has_log_number_;
   bool has_prev_log_number_;
   bool has_next_file_number_;
   bool has_last_sequence_;
 
+  /// 要更新的level。
   std::vector<std::pair<int, InternalKey>> compact_pointers_;
+  /// 要删除的SST文件。（compact的input）
   DeletedFileSet deleted_files_;
+  /// 生成的新SST文件。（compact的output）
   std::vector<std::pair<int, FileMetaData>> new_files_;
 };
 

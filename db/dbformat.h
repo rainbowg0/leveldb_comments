@@ -131,6 +131,10 @@ class InternalFilterPolicy : public FilterPolicy {
 // Modules in this directory should keep internal keys wrapped inside
 // the following class instead of plain strings so that we do not
 // incorrectly use string comparisons instead of an InternalKeyComparator.
+/// InternalKey格式：
+/// +----------------------------------------+
+/// | user_key | seqno(7byte) | type(1byte)  |
+/// +----------------------------------------+
 class InternalKey {
  private:
   std::string rep_;
@@ -168,12 +172,25 @@ inline int InternalKeyComparator::Compare(const InternalKey& a,
   return Compare(a.Encode(), b.Encode());
 }
 
+/**
+ * 对Slice进行解析，解析为ParsedInternalKey。
+ * @param internal_key 要解析的Slice。
+ * @param result 解析的结果，ParsedInternalKey。
+ */
 inline bool ParseInternalKey(const Slice& internal_key,
                              ParsedInternalKey* result) {
+  /// InternalKey(Slice)格式：
+  /// +----------------------------------------+
+  /// | user_key | seqno(7byte) | type(1byte)  |
+  /// +----------------------------------------+
   const size_t n = internal_key.size();
+  /// 至少8byte。seqno(7byte) + type(1byte)
   if (n < 8) return false;
+  /// data + n走到Slice的末尾，然后减去8，获取seqno + type组合。
   uint64_t num = DecodeFixed64(internal_key.data() + n - 8);
+  /// c == type。
   uint8_t c = num & 0xff;
+  /// 获取seqno。
   result->sequence = num >> 8;
   result->type = static_cast<ValueType>(c);
   result->user_key = Slice(internal_key.data(), n - 8);

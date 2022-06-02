@@ -94,7 +94,6 @@ Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
  * @param file_number 要迭代的file编号。
  * @param file_size 要迭代的file大小。
  * @param tableptr 塞入一个指向table的指针。
- * @return
  */
 Iterator* TableCache::NewIterator(const ReadOptions& options,
                                   uint64_t file_number, uint64_t file_size,
@@ -131,7 +130,6 @@ Iterator* TableCache::NewIterator(const ReadOptions& options,
  * @param k
  * @param arg
  * @param handle_result
- * @return
  */
 Status TableCache::Get(const ReadOptions& options, uint64_t file_number,
                        uint64_t file_size, const Slice& k, void* arg,
